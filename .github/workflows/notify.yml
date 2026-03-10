@@ -8,17 +8,18 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # needed for git log ordering
+          fetch-depth: 0
 
       - name: Find newest CSV
         id: csv
         run: |
-          # Find all CSVs in repo root
           COUNT=$(find . -maxdepth 1 -name "*.csv" | wc -l | tr -d ' ')
 
           if [ "$COUNT" -eq 0 ]; then
@@ -27,11 +28,9 @@ jobs:
             exit 0
           fi
 
-          # Pick most recently committed CSV using git log
           NEWEST=$(git log --name-only --pretty=format: -- "*.csv" \
                    | grep "\.csv$" | head -1)
 
-          # Fallback to ls -t if git log gives nothing useful
           if [ -z "$NEWEST" ] || [ ! -f "$NEWEST" ]; then
             NEWEST=$(ls -t *.csv | head -1)
           fi
@@ -65,18 +64,15 @@ jobs:
         run: |
           CSV="${{ steps.csv.outputs.name }}"
 
-          # Must not be empty
           if [ ! -s "$CSV" ]; then
             echo "ERROR: '$CSV' is empty."
             exit 1
           fi
 
-          # Must contain IMDB IDs (tt followed by 7+ digits)
-          # Present in raw IMDB exports (Const column) and enriched formats alike
           if ! grep -qE "tt[0-9]{7,}" "$CSV"; then
             echo "ERROR: '$CSV' doesn't look like an IMDB export."
             echo "No IMDB IDs (tt1234567 format) found."
-            echo "First 3 lines of file:"
+            echo "First 3 lines:"
             head -3 "$CSV"
             exit 1
           fi
@@ -88,6 +84,7 @@ jobs:
         if: steps.csv.outputs.found == 'true'
         run: |
           curl -X POST \
+            --fail-with-body \
             -H "Authorization: Bearer ${{ secrets.TRIGGER_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/Yokamin/movie-stats/dispatches \
