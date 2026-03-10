@@ -12,56 +12,77 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for git log ordering
 
-      - name: Find and validate CSV
+      - name: Find newest CSV
         id: csv
         run: |
           # Find all CSVs in repo root
-          CSVS=$(find . -maxdepth 1 -name "*.csv" -printf "%T@ %f\n" 2>/dev/null \
-                  || find . -maxdepth 1 -name "*.csv" | xargs stat -f "%m %N" 2>/dev/null \
-                  || ls -t *.csv 2>/dev/null | awk '{print NR" "$0}')
-
           COUNT=$(find . -maxdepth 1 -name "*.csv" | wc -l | tr -d ' ')
 
           if [ "$COUNT" -eq 0 ]; then
-            echo "No CSV file found — nothing to trigger."
+            echo "No CSV found (probably a deletion) — nothing to do."
             echo "found=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Pick the most recently modified CSV
-          NEWEST=$(ls -t *.csv | head -1)
+          # Pick most recently committed CSV using git log
+          NEWEST=$(git log --name-only --pretty=format: -- "*.csv" \
+                   | grep "\.csv$" | head -1)
 
-          if [ "$COUNT" -gt 1 ]; then
-            ALL=$(ls *.csv | tr '\n' ' ')
-            echo "WARNING: $COUNT CSV files found: $ALL"
-            echo "Using newest: $NEWEST"
-            echo "Consider removing old files to keep the repo tidy."
-          else
-            echo "Found: $NEWEST"
+          # Fallback to ls -t if git log gives nothing useful
+          if [ -z "$NEWEST" ] || [ ! -f "$NEWEST" ]; then
+            NEWEST=$(ls -t *.csv | head -1)
           fi
 
-          # Validate: must not be empty
-          if [ ! -s "$NEWEST" ]; then
-            echo "ERROR: '$NEWEST' is empty."
-            exit 1
-          fi
-
-          # Validate: must contain IMDB-style IDs (tt followed by digits)
-          if ! grep -qE "tt[0-9]{7,}" "$NEWEST"; then
-            echo "ERROR: '$NEWEST' doesn't look like an IMDB export."
-            echo "Expected rows containing IMDB IDs like tt1234567."
-            echo "First few lines:"
-            head -3 "$NEWEST"
-            exit 1
-          fi
-
-          # Count entries as a sanity check
-          ROWS=$(grep -cE "tt[0-9]{7,}" "$NEWEST" || true)
-          echo "Validation passed: ~$ROWS entries found in $NEWEST"
-
-          echo "found=true" >> $GITHUB_OUTPUT
+          echo "Using: $NEWEST"
           echo "name=$NEWEST" >> $GITHUB_OUTPUT
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Move old CSVs to _old/
+        if: steps.csv.outputs.found == 'true' && steps.csv.outputs.count > 1
+        run: |
+          NEWEST="${{ steps.csv.outputs.name }}"
+          mkdir -p _old
+
+          for f in *.csv; do
+            if [ "$f" != "$NEWEST" ]; then
+              mv "$f" "_old/$f"
+              echo "Moved to _old/: $f"
+            fi
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Auto-cleanup: moved old CSVs to _old/ [skip ci]"
+          git push
+
+      - name: Validate CSV
+        if: steps.csv.outputs.found == 'true'
+        run: |
+          CSV="${{ steps.csv.outputs.name }}"
+
+          # Must not be empty
+          if [ ! -s "$CSV" ]; then
+            echo "ERROR: '$CSV' is empty."
+            exit 1
+          fi
+
+          # Must contain IMDB IDs (tt followed by 7+ digits)
+          # Present in raw IMDB exports (Const column) and enriched formats alike
+          if ! grep -qE "tt[0-9]{7,}" "$CSV"; then
+            echo "ERROR: '$CSV' doesn't look like an IMDB export."
+            echo "No IMDB IDs (tt1234567 format) found."
+            echo "First 3 lines of file:"
+            head -3 "$CSV"
+            exit 1
+          fi
+
+          ROWS=$(grep -cE "tt[0-9]{7,}" "$CSV" || true)
+          echo "Validation passed: ~$ROWS entries in $CSV"
 
       - name: Trigger enrichment in movie-stats
         if: steps.csv.outputs.found == 'true'
