@@ -1,20 +1,73 @@
+  name: Notify movie-stats on CSV update
 
-name: Notify movie-stats on CSV update
+  on:
+    push:
+      paths:
+        - '*.csv'
 
-on:
-  push:
-    paths:
-      - '*.csv'   # triggers on any CSV file update, whatever it's named
+  jobs:
+    notify:
+      runs-on: ubuntu-latest
 
-jobs:
-  notify:
-    runs-on: ubuntu-latest
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
 
-    steps:
-      - name: Trigger enrichment in movie-stats
-        run: |
-          curl -X POST \
-            -H "Authorization: Bearer ${{ secrets.TRIGGER_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/Yokamin/movie-stats/dispatches \
-            -d '{"event_type":"csv-updated"}'
+        - name: Find and validate CSV
+          id: csv
+          run: |
+            # Find all CSVs in repo root
+            CSVS=$(find . -maxdepth 1 -name "*.csv" -printf "%T@ %f\n" 2>/dev/null \
+                   || find . -maxdepth 1 -name "*.csv" | xargs stat -f "%m %N" 2>/dev/null \
+                   || ls -t *.csv 2>/dev/null | awk '{print NR" "$0}')
+
+            COUNT=$(find . -maxdepth 1 -name "*.csv" | wc -l | tr -d ' ')
+
+            if [ "$COUNT" -eq 0 ]; then
+              echo "No CSV file found — nothing to trigger."
+              echo "found=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            # Pick the most recently modified CSV
+            NEWEST=$(ls -t *.csv | head -1)
+
+            if [ "$COUNT" -gt 1 ]; then
+              ALL=$(ls *.csv | tr '\n' ' ')
+              echo "WARNING: $COUNT CSV files found: $ALL"
+              echo "Using newest: $NEWEST"
+              echo "Consider removing old files to keep the repo tidy."
+            else
+              echo "Found: $NEWEST"
+            fi
+
+            # Validate: must not be empty
+            if [ ! -s "$NEWEST" ]; then
+              echo "ERROR: '$NEWEST' is empty."
+              exit 1
+            fi
+
+            # Validate: must contain IMDB-style IDs (tt followed by digits)
+            if ! grep -qE "tt[0-9]{7,}" "$NEWEST"; then
+              echo "ERROR: '$NEWEST' doesn't look like an IMDB export."
+              echo "Expected rows containing IMDB IDs like tt1234567."
+              echo "First few lines:"
+              head -3 "$NEWEST"
+              exit 1
+            fi
+
+            # Count entries as a sanity check
+            ROWS=$(grep -cE "tt[0-9]{7,}" "$NEWEST" || true)
+            echo "Validation passed: ~$ROWS entries found in $NEWEST"
+
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "name=$NEWEST" >> $GITHUB_OUTPUT
+
+        - name: Trigger enrichment in movie-stats
+          if: steps.csv.outputs.found == 'true'
+          run: |
+            curl -X POST \
+              -H "Authorization: Bearer ${{ secrets.TRIGGER_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/Yokamin/movie-stats/dispatches \
+              -d "{\"event_type\":\"csv-updated\",\"client_payload\":{\"csv_name\":\"${{ steps.csv.outputs.name }}\"}}"
