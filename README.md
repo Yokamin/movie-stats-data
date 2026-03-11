@@ -1,6 +1,6 @@
 # Movie Stats — Data Repo
 
-This repository holds the IMDB ratings export for the [Movie Stats dashboard](https://yokamin.github.io/movie-stats/).
+This repository holds the IMDB ratings export for the [Movie Stats](https://github.com/Yokamin/movie-stats) dashboard.
 
 When you upload a new CSV here, the dashboard updates automatically — no code needed.
 
